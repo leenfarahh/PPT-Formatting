@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPTX Formatting Tool</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16181d;
+    --ink-soft: #5d6470;
+    --ink-faint: #878e9b;
+    --line: #e2e5ea;
+    --line-strong: #cbd0d8;
+    --accent: #0f4c81;
+    --accent-soft: #e8effa;
+    --good: #1f7a5c;
+    --good-soft: #e3f3ed;
+    --warn: #8a6410;
+    --warn-soft: #fdf3dd;
+    --bad: #a33338;
+    --bad-soft: #fbe9ea;
+    --radius: 10px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c1f25;
+      --ink: #eceef2;
+      --ink-soft: #a7aeba;
+      --ink-faint: #7c8391;
+      --line: #2c3039;
+      --line-strong: #3c424e;
+      --accent: #6ea8de;
+      --accent-soft: #1e2b3a;
+      --good: #6bc9a4;
+      --good-soft: #172b25;
+      --warn: #dcb35f;
+      --warn-soft: #2c2517;
+      --bad: #e08289;
+      --bad-soft: #2e1d1f;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+  }
+  h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  h1 { font-size: 18px; }
+  h2 { font-size: 16px; margin-bottom: 4px; }
+  h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--ink-faint); margin-bottom: 10px; }
+  p  { margin: 0 0 12px; color: var(--ink-soft); }
+  a  { color: var(--accent); }
+
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 24px; background: var(--panel);
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10;
+  }
+  header .sub { color: var(--ink-faint); font-size: 13px; }
+  header .spacer { flex: 1; }
+
+  nav { display: flex; gap: 4px; padding: 0 24px; background: var(--panel);
+        border-bottom: 1px solid var(--line); }
+  nav button {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    padding: 11px 14px; font: inherit; font-size: 14px; color: var(--ink-soft);
+    cursor: pointer;
+  }
+  nav button:hover { color: var(--ink); }
+  nav button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+
+  main { max-width: 1120px; margin: 0 auto; padding: 24px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 18px;
+  }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+
+  label { display: block; font-size: 13px; color: var(--ink-soft); margin-bottom: 5px; }
+  input[type=text], select, input[type=file] {
+    width: 100%; padding: 8px 10px; font: inherit; font-size: 14px;
+    color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line-strong); border-radius: 7px;
+  }
+  input[type=file] { padding: 7px; }
+  .field { margin-bottom: 14px; }
+  .check { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 14px; }
+  .check input { margin-top: 3px; }
+  .check span { font-size: 14px; color: var(--ink-soft); }
+
+  button.primary {
+    background: var(--accent); color: #fff; border: none; border-radius: 7px;
+    padding: 10px 18px; font: inherit; font-weight: 500; cursor: pointer;
+  }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost {
+    background: none; color: var(--accent); border: 1px solid var(--line-strong);
+    border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--ink-faint); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  .scroll { overflow-x: auto; }
+
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px;
+          font-size: 12px; font-weight: 500; white-space: nowrap; }
+  .pill.accent { background: var(--accent-soft); color: var(--accent); }
+  .pill.good   { background: var(--good-soft);   color: var(--good); }
+  .pill.warn   { background: var(--warn-soft);   color: var(--warn); }
+  .pill.bad    { background: var(--bad-soft);    color: var(--bad); }
+  .pill.mute   { background: var(--bg); color: var(--ink-faint);
+                 border: 1px solid var(--line); }
+
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+  .swatch { border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
+            width: 92px; }
+  .swatch .chip { height: 34px; }
+  .swatch .meta { padding: 4px 7px; font-size: 11px; }
+  .swatch .role { color: var(--ink); }
+  .swatch .hex { color: var(--ink-faint); font-family: var(--mono); font-size: 10px; }
+
+  .evidence { color: var(--ink-faint); font-size: 12px; margin: 3px 0 0;
+              padding-left: 15px; }
+  .evidence li { margin-bottom: 1px; }
+
+  .banner { padding: 11px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+  .banner.bad  { background: var(--bad-soft);  color: var(--bad); }
+  .banner.good { background: var(--good-soft); color: var(--good); }
+  .banner.warn { background: var(--warn-soft); color: var(--warn); }
+  .hidden { display: none !important; }
+  .muted { color: var(--ink-faint); font-size: 13px; }
+  .empty { color: var(--ink-faint); font-size: 14px; padding: 22px 0; text-align: center; }
+
+  .stats { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 4px; }
+  .stat .n { font-size: 22px; font-weight: 600; }
+  .stat .k { font-size: 12px; color: var(--ink-faint); text-transform: uppercase;
+             letter-spacing: .05em; }
+
+  .spin { display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
+          border: 2px solid currentColor; border-right-color: transparent;
+          border-radius: 50%; animation: spin .7s linear infinite; margin-right: 7px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  code { font-family: var(--mono); font-size: 12px; }
+  ul.plain { margin: 0; padding-left: 18px; font-size: 13px; color: var(--ink-soft); }
+  ul.plain li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PPTX Formatting Tool</h1>
+  <span class="sub">Format a rough deck to match a designer's master</span>
+  <span class="spacer"></span>
+  <span id="backend" class="pill mute">checking…</span>
+</header>
+
+<nav role="tablist">
+  <button role="tab" data-tab="format" aria-selected="true">Format a deck</button>
+  <button role="tab" data-tab="bank" aria-selected="false">Template Bank</button>
+  <button role="tab" data-tab="jobs" aria-selected="false">Jobs</button>
+</nav>
+
+<main>
+  <div id="error" class="banner bad hidden"></div>
+
+  <!-- ---------------- Format ---------------- -->
+  <section id="tab-format">
+    <div class="panel">
+      <h2>1. The brand</h2>
+      <p>Submit the designer's master. It can be empty or a full deck; content
+         slides in it are ignored.</p>
+      <div class="grid2">
+        <div class="field">
+          <label for="client">Client</label>
+          <input type="text" id="client" placeholder="e.g. Northwind Holdings">
+        </div>
+        <div class="field">
+          <label for="project">Project</label>
+          <input type="text" id="project" placeholder="e.g. Q3 Board Deck">
+        </div>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="useBanked">
+        <span>Use this client's archived brand instead of submitting a master
+              (skips extraction; needs a previous submission).</span>
+      </div>
+      <div class="field" id="masterField">
+        <label for="masterFile">Master slide (.pptx)</label>
+        <input type="file" id="masterFile" accept=".pptx">
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>2. The deck</h2>
+      <p>Upload the rough content deck. Each slide is read for what it
+         structurally is, then routed to the matching layout.</p>
+      <div class="field">
+        <label for="contentFile">Content deck (.pptx)</label>
+        <input type="file" id="contentFile" accept=".pptx">
+      </div>
+      <div id="classifyStatus" class="muted"></div>
+      <div id="classifyResult" class="hidden">
+        <h3 style="margin-top:18px">Detected slides — change any that read wrong</h3>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th style="width:52px">Slide</th><th style="width:210px">Layout type</th>
+                  <th style="width:96px">Confidence</th><th>Why</th></tr>
+            </thead>
+            <tbody id="classifyRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <button class="primary" id="runBtn" disabled>Format deck</button>
+      <span id="runStatus" class="muted" style="margin-left:12px"></span>
+    </div>
+
+    <div id="result" class="hidden"></div>
+  </section>
+
+  <!-- ---------------- Bank ---------------- -->
+  <section id="tab-bank" class="hidden">
+    <div class="panel">
+      <h2>Template Bank</h2>
+      <p>Every submitted master is archived here. Gaps in a new submission are
+         filled from these, and a repeat deck can skip extraction entirely.</p>
+      <div id="bankList"><div class="empty">Loading…</div></div>
+    </div>
+    <div id="bankDetail"></div>
+  </section>
+
+  <!-- ---------------- Jobs ---------------- -->
+  <section id="tab-jobs" class="hidden">
+    <div class="panel">
+      <h2>Jobs</h2>
+      <p>Every formatting run, with its report and a re-downloadable deck.</p>
+      <div id="jobList"><div class="empty">Loading…</div></div>
+    </div>
+    <div id="jobDetail"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+let ARCHETYPES = [];
+let classified = [];          // what the classifier detected, per slide
+let overrides = {};           // slide number -> archetype, only where changed
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function showError(message) {
+  const box = $("error");
+  box.textContent = message;
+  box.classList.remove("hidden");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+function clearError() { $("error").classList.add("hidden"); }
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try { detail = (await response.json()).detail ?? detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+// ---------------- tabs ----------------
+
+document.querySelectorAll("nav button").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((other) =>
+      other.setAttribute("aria-selected", String(other === tab)));
+    ["format", "bank", "jobs"].forEach((name) =>
+      $("tab-" + name).classList.toggle("hidden", name !== tab.dataset.tab));
+    if (tab.dataset.tab === "bank") loadBank();
+    if (tab.dataset.tab === "jobs") loadJobs();
+  });
+});
+
+// ---------------- startup ----------------
+
+async function loadHealth() {
+  try {
+    const health = await api("/api/health");
+    ARCHETYPES = health.archetypes;
+    const storage = health.storage;
+    const badge = $("backend");
+    if (storage.backend === "supabase") {
+      const ready = storage.configured;
+      badge.className = "pill " + (ready ? "good" : "bad");
+      badge.textContent = ready ? "Supabase" : "Supabase — not configured";
+    } else {
+      badge.className = "pill mute";
+      badge.textContent = "Local storage";
+    }
+  } catch (err) {
+    showError("Could not reach the server: " + err.message);
+  }
+}
+
+// ---------------- classification ----------------
+
+$("useBanked").addEventListener("change", (event) => {
+  $("masterField").classList.toggle("hidden", event.target.checked);
+  refreshRunButton();
+});
+$("masterFile").addEventListener("change", refreshRunButton);
+$("contentFile").addEventListener("change", classifyContent);
+
+function refreshRunButton() {
+  const hasContent = $("contentFile").files.length > 0;
+  const hasBrand = $("useBanked").checked
+    ? $("client").value.trim().length > 0
+    : $("masterFile").files.length > 0;
+  $("runBtn").disabled = !(hasContent && hasBrand);
+}
+$("client").addEventListener("input", refreshRunButton);
+
+async function classifyContent() {
+  const file = $("contentFile").files[0];
+  refreshRunButton();
+  if (!file) return;
+
+  clearError();
+  overrides = {};
+  $("classifyStatus").innerHTML = '<span class="spin"></span>Reading the deck…';
+  $("classifyResult").classList.add("hidden");
+
+  const body = new FormData();
+  body.append("content", file);
+  try {
+    const data = await api("/api/classify", { method: "POST", body });
+    classified = data.slides;
+    renderClassification();
+    $("classifyStatus").textContent = `${classified.length} slides read.`;
+  } catch (err) {
+    $("classifyStatus").textContent = "";
+    showError("Could not read that deck: " + err.message);
+  }
+}
+
+function confidencePill(value) {
+  const kind = value >= 0.85 ? "good" : value >= 0.6 ? "accent" : "warn";
+  return `<span class="pill ${kind}">${Math.round(value * 100)}%</span>`;
+}
+
+function renderClassification() {
+  $("classifyRows").innerHTML = classified.map((slide) => `
+    <tr>
+      <td>${slide.slide}</td>
+      <td>
+        <select data-slide="${slide.slide}">
+          ${ARCHETYPES.map((a) => `
+            <option value="${esc(a.value)}"${a.value === slide.archetype ? " selected" : ""}>
+              ${esc(a.label)}
+            </option>`).join("")}
+        </select>
+      </td>
+      <td>${confidencePill(slide.confidence)}</td>
+      <td><ul class="evidence">${
+        slide.evidence.map((line) => `<li>${esc(line)}</li>`).join("")
+      }</ul></td>
+    </tr>`).join("");
+
+  $("classifyRows").querySelectorAll("select").forEach((select) => {
+    select.addEventListener("change", (event) => {
+      const number = Number(event.target.dataset.slide);
+      const detected = classified.find((s) => s.slide === number).archetype;
+      // Only send genuine corrections, so the report can show what changed.
+      if (event.target.value === detected) delete overrides[number];
+      else overrides[number] = event.target.value;
+    });
+  });
+  $("classifyResult").classList.remove("hidden");
+}
+
+// ---------------- run ----------------
+
+$("runBtn").addEventListener("click", async () => {
+  clearError();
+  const button = $("runBtn");
+  button.disabled = true;
+  $("runStatus").innerHTML = '<span class="spin"></span>Formatting…';
+  $("result").classList.add("hidden");
+
+  const body = new FormData();
+  body.append("content", $("contentFile").files[0]);
+  if ($("useBanked").checked) {
+    body.append("use_banked_spec", "true");
+  } else {
+    body.append("master", $("masterFile").files[0]);
+  }
+  if ($("client").value.trim())  body.append("client", $("client").value.trim());
+  if ($("project").value.trim()) body.append("project", $("project").value.trim());
+  if (Object.keys(overrides).length) body.append("overrides", JSON.stringify(overrides));
+
+  try {
+    const data = await api("/api/jobs", { method: "POST", body });
+    renderResult(data);
+    $("runStatus").textContent = "Done.";
+  } catch (err) {
+    $("runStatus").textContent = "";
+    showError("Formatting failed: " + err.message);
+  } finally {
+    button.disabled = false;
+    refreshRunButton();
+  }
+});
+
+function renderResult(data) {
+  const report = data.report;
+  const layouts = report.layouts;
+  const qa = report.qa_issues || [];
+  const warnings = report.warnings || [];
+
+  const layoutRow = (item, kind) => `
+    <tr>
+      <td>${esc(item.name)}</td>
+      <td><span class="pill mute">${esc(item.archetype)}</span></td>
+      <td><span class="pill ${kind === "designer" ? "good" : kind === "bank" ? "accent" : "mute"}">
+        ${kind === "designer" ? "designer" : kind === "bank" ? "from bank" : "generated"}
+      </span></td>
+    </tr>`;
+
+  $("result").innerHTML = `
+    <div class="panel">
+      <div class="banner good">
+        Deck formatted. It opens and edits normally in PowerPoint.
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="n">${report.slides_processed}</div>
+             <div class="k">slides</div></div>
+        <div class="stat"><div class="n">${layouts.available.length}</div>
+             <div class="k">layouts</div></div>
+        <div class="stat"><div class="n">${warnings.length}</div>
+             <div class="k">warnings</div></div>
+        <div class="stat"><div class="n">${qa.length}</div>
+             <div class="k">QA flags</div></div>
+      </div>
+      <p style="margin-top:14px">
+        <a class="primary" style="text-decoration:none;display:inline-block;padding:10px 18px;
+           background:var(--accent);color:#fff;border-radius:7px"
+           href="${data.download_url}">Download deck</a>
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Slide routing</h2>
+      <div class="scroll"><table>
+        <thead><tr><th style="width:52px">Slide</th><th>Layout type</th>
+                   <th>Layout used</th></tr></thead>
+        <tbody>${report.slides.map((slide) => `
+          <tr>
+            <td>${slide.slide}</td>
+            <td><span class="pill mute">${esc(slide.archetype)}</span></td>
+            <td>${esc(slide.layout)}${
+              slide.resolved_archetype && slide.resolved_archetype !== slide.archetype
+                ? ` <span class="muted">(nearest available)</span>` : ""
+            }</td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="panel">
+      <h2>Where the layouts came from</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Layout</th><th>Type</th><th>Source</th></tr></thead>
+        <tbody>
+          ${layouts.designer.map((i) => layoutRow(i, "designer")).join("")}
+          ${layouts.from_bank.map((i) => layoutRow(i, "bank")).join("")}
+          ${layouts.generated.map((i) => layoutRow(i, "generated")).join("")}
+        </tbody>
+      </table></div>
+    </div>
+
+    ${warnings.length ? `
+    <div class="panel">
+      <h2>Warnings</h2>
+      <p>Content that could not be mapped cleanly. Nothing was dropped silently.</p>
+      <ul class="plain">${warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+    </div>` : ""}
+
+    ${qa.length ? `
+    <div class="panel">
+      <h2>QA flags</h2>
+      <p>Static checks, so these are advisory rather than certain.</p>
+      <ul class="plain">${qa.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>
+    </div>` : ""}
+  `;
+  $("result").classList.remove("hidden");
+  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ---------------- bank ----------------
+
+async function loadBank() {
+  $("bankDetail").innerHTML = "";
+  try {
+    const data = await api("/api/bank");
+    if (!data.entries.length) {
+      $("bankList").innerHTML =
+        '<div class="empty">Nothing archived yet. Format a deck with a client name to populate it.</div>';
+      return;
+    }
+    $("bankList").innerHTML = `<div class="scroll"><table>
+      <thead><tr><th>Client</th><th>Project</th><th>Revision</th>
+                 <th>Layout types</th><th>Updated</th><th></th></tr></thead>
+      <tbody>${data.entries.slice().reverse().map((entry) => `
+        <tr>
+          <td>${esc(entry.client || entry.entry_id)}</td>
+          <td>${esc(entry.project || "—")}</td>
+          <td>${entry.revision}</td>
+          <td>${entry.archetypes.length}</td>
+          <td class="muted">${esc((entry.updated_at || "").slice(0, 10))}</td>
+          <td><button class="ghost" data-entry="${esc(entry.entry_id)}">View</button></td>
+        </tr>`).join("")}
+      </tbody></table></div>`;
+
+    $("bankList").querySelectorAll("button[data-entry]").forEach((button) =>
+      button.addEventListener("click", () => showEntry(button.dataset.entry)));
+  } catch (err) {
+    showError("Could not load the bank: " + err.message);
+  }
+}
+
+async function showEntry(entryId) {
+  try {
+    const { summary } = await api("/api/bank/" + encodeURIComponent(entryId));
+    $("bankDetail").innerHTML = `
+      <div class="panel">
+        <h2>${esc(summary.client || entryId)}</h2>
+        <p class="muted">Spec version ${esc(summary.spec_version)} ·
+           extracted ${esc((summary.extracted_at || "").slice(0, 10))} ·
+           ${summary.content_slides_ignored} content slides ignored on ingest</p>
+
+        <h3 style="margin-top:20px">Palette</h3>
+        <div class="swatches">${Object.entries(summary.colors).map(([role, hex]) => `
+          <div class="swatch">
+            <div class="chip" style="background:#${esc(hex)}"></div>
+            <div class="meta"><div class="role">${esc(role)}</div>
+                 <div class="hex">#${esc(hex)}</div></div>
+          </div>`).join("")}</div>
+
+        <h3 style="margin-top:20px">Typefaces</h3>
+        <div class="scroll"><table>
+          <tbody>
+            <tr><td>Headings (Latin)</td><td>${esc(summary.fonts.major_latin)}</td></tr>
+            <tr><td>Body (Latin)</td><td>${esc(summary.fonts.minor_latin)}</td></tr>
+            <tr><td>Headings (Arabic)</td>
+                <td>${esc(summary.fonts.major_cs || "— falls back to Latin")}</td></tr>
+            <tr><td>Body (Arabic)</td>
+                <td>${esc(summary.fonts.minor_cs || "— falls back to Latin")}</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3 style="margin-top:20px">Layouts the designer authored</h3>
+        <div class="scroll"><table>
+          <thead><tr><th>Name</th><th>Type</th><th>Placeholders</th></tr></thead>
+          <tbody>${summary.layouts.map((layout) => `
+            <tr><td>${esc(layout.name)}</td>
+                <td><span class="pill mute">${esc(layout.archetype)}</span></td>
+                <td>${layout.placeholders}</td></tr>`).join("")}
+          </tbody>
+        </table></div>
+
+        ${summary.archetypes_missing.length ? `
+        <h3 style="margin-top:20px">Filled in when a deck is formatted</h3>
+        <div>${summary.archetypes_missing.map((a) =>
+          `<span class="pill warn" style="margin:0 5px 5px 0">${esc(a)}</span>`).join("")}</div>
+        ` : ""}
+      </div>`;
+    $("bankDetail").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    showError("Could not load that entry: " + err.message);
+  }
+}
+
+// ---------------- jobs ----------------
+
+async function loadJobs() {
+  $("jobDetail").innerHTML = "";
+  try {
+    const data = await api("/api/jobs");
+    if (!data.jobs.length) {
+      $("jobList").innerHTML = '<div class="empty">No jobs yet.</div>';
+      return;
+    }
+    const statusPill = (status) =>
+      `<span class="pill ${status === "complete" ? "good"
+        : status === "failed" ? "bad" : "mute"}">${esc(status)}</span>`;
+
+    $("jobList").innerHTML = `<div class="scroll"><table>
+      <thead><tr><th>Client</th><th>Deck</th><th>Status</th><th>Slides</th>
+                 <th>QA</th><th>When</th><th></th></tr></thead>
+      <tbody>${data.jobs.map((job) => `
+        <tr>
+          <td>${esc(job.client || "—")}</td>
+          <td>${esc(job.content_filename || "—")}${
+            job.stage_1_skipped ? ' <span class="pill accent">banked brand</span>' : ""}</td>
+          <td>${statusPill(job.status)}</td>
+          <td>${job.slides_processed}</td>
+          <td>${job.qa_flag_count}</td>
+          <td class="muted">${esc((job.created_at || "").replace("T", " ").slice(0, 16))}</td>
+          <td>
+            ${job.status === "complete"
+              ? `<a class="ghost" style="text-decoration:none"
+                    href="/api/jobs/${esc(job.job_id)}/download">Download</a>`
+              : `<span class="muted">${esc(job.error || "")}</span>`}
+          </td>
+        </tr>`).join("")}
+      </tbody></table></div>`;
+  } catch (err) {
+    showError("Could not load jobs: " + err.message);
+  }
+}
+
+loadHealth();
+</script>
+</body>
+</html>

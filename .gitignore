@@ -3,8 +3,24 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-examples/sample_master.pptx
-examples/sample_content.pptx
-examples/output/
 *.egg-info/
 .DS_Store
+
+# Generated demo artefacts
+examples/sample_master.pptx
+examples/sample_content.pptx
+examples/sample_logo.png
+examples/output/
+
+# The Template Bank is client data, not source. It archives submitted
+# masters and their extracted specs, so it must not be committed to a
+# shared repository. Back it up as data, on storage approved for client
+# material.
+template_bank/entries/
+template_bank/index.json
+
+# Secrets. The Supabase service-role key bypasses row-level security.
+.env
+
+# Local job records and their output decks (client material).
+jobs/

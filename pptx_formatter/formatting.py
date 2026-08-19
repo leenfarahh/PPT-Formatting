@@ -1,204 +1,343 @@
 """
-Stage 3 - Detailed Formatting (technical plan, Section 5.3) - Phase 1-2 scope only.
+Stage 3c - detailed formatting.
 
-Implements:
-    5.3.1 Typography & text boxes  (Phase 1)
-    5.3.2 Color & branding application (Phase 1)
-    5.3.3 Layout, spacing & grid alignment (Phase 2)
+Runs over a rebuilt slide and applies typography, color, bilingual text
+direction, grid alignment, and table/chart styling.
 
-NOT implemented here (Phase 3 scope, Section 5.3.4):
-    5.3.4 Charts, tables & icons - table/icon restyling is a reasonable
-    Phase 1-2 stretch (see format_table below, included as a bonus since it
-    doesn't need Phase 3's chart-XML work) but full chart recoloring is left
-    out, matching the phase boundary in the plan.
+The governing rule here is that **placeholders are authoritative**. Content
+mapped into a placeholder already sits at the layout's geometry and already
+inherits the master's typography, so this stage must not pin sizes or
+positions over it - doing so would recreate exactly the hardcoded overrides
+Stage 2 works to remove. What placeholders do get is direction handling and
+theme *references* (`+mn-lt`, `+mn-cs`), which set the right face per script
+without breaking inheritance.
+
+Shapes that could not be mapped into a placeholder are a different case:
+they carry the rough deck's arbitrary geometry and literal colors, so they
+get the full treatment - theme fonts, nearest-accent color remapping, and
+snapping to the grid the master implies.
 """
 from __future__ import annotations
 
-from pptx.util import Pt, Emu
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import PP_PLACEHOLDER
+from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
+from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
+from pptx.util import Emu, Pt
 
+from . import rtl
 from .style_spec import StyleSpec, ACCENT_ROLES
 
-TITLE_FONT_SIZE = Pt(28)
-BODY_FONT_SIZE = Pt(18)
-TABLE_HEADER_FONT_SIZE = Pt(14)
-TABLE_BODY_FONT_SIZE = Pt(12)
+# Sizes applied only to text that could not be placed in a placeholder;
+# placeholder text inherits its size from the layout instead.
+FALLBACK_TITLE_PT = Pt(28)
+FALLBACK_BODY_PT = Pt(18)
 
-TITLE_PLACEHOLDER_TYPES = {PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE}
+TITLE_PLACEHOLDERS = {PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE}
+
+# Theme font reference tokens. Setting these rather than a literal typeface
+# keeps a run following the theme.
+MAJOR_LATIN, MINOR_LATIN = "+mj-lt", "+mn-lt"
+MAJOR_CS, MINOR_CS = "+mj-cs", "+mn-cs"
 
 
-def _hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
+# --- color ----------------------------------------------------------------
+
+def _hex_to_rgb(hex_str: str) -> tuple:
     hex_str = hex_str.lstrip("#")
     return int(hex_str[0:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16)
 
 
-def _rgb_distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
-    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+def _rgb_distance(a: tuple, b: tuple) -> float:
+    """
+    Perceptually weighted RGB distance.
+
+    Plain Euclidean distance in RGB treats a green shift the same as a blue
+    one, which the eye does not. These coefficients approximate relative
+    sensitivity and are enough to stop, say, a mid-grey being pulled toward
+    a saturated accent that happens to be numerically close.
+    """
+    return (
+        2.0 * (a[0] - b[0]) ** 2
+        + 4.0 * (a[1] - b[1]) ** 2
+        + 3.0 * (a[2] - b[2]) ** 2
+    ) ** 0.5
 
 
-def nearest_accent_role(rgb_hex: str, style_spec: StyleSpec) -> str | None:
-    """
-    Nearest-color match (Section 5.3.2): map an arbitrary RGB found on a
-    content slide to the closest theme accent role, by simple Euclidean
-    distance in RGB space. Good enough to demonstrate and test the rule;
-    a production version might use a perceptual color space (Lab/OKLab)
-    instead of raw RGB distance.
-    """
+def nearest_accent_role(rgb_hex: str, spec: StyleSpec) -> str | None:
+    """Map an arbitrary RGB to the closest theme accent role."""
     target = _hex_to_rgb(rgb_hex)
     best_role, best_dist = None, float("inf")
     for role in ACCENT_ROLES:
-        if role not in style_spec.theme_colors:
+        if role not in spec.theme.colors:
             continue
-        dist = _rgb_distance(target, _hex_to_rgb(style_spec.theme_colors[role]))
+        dist = _rgb_distance(target, _hex_to_rgb(spec.theme.colors[role]))
         if dist < best_dist:
             best_role, best_dist = role, dist
     return best_role
 
 
-def _is_title_shape(shape) -> bool:
-    if not shape.is_placeholder:
-        return False
-    return shape.placeholder_format.type in TITLE_PLACEHOLDER_TYPES
-
-
-def apply_typography(slide, style_spec: StyleSpec) -> None:
-    """5.3.1 - set font family/size per shape role, normalize alignment/line spacing.
-
-    Also forces word-wrap on and disables shape-autofit. Plain text boxes
-    (python-pptx's `add_textbox`, and PowerPoint's own Insert > Text Box)
-    default to `wrap="none"` + `spAutoFit`, which lets the shape silently
-    grow/reposition around a single unwrapped line instead of respecting
-    the box you drew - exactly the kind of overflow this stage is meant to
-    fix per Section 5.3.1 ("apply autofit rules ... shrink-to-fit vs. fixed
-    size"). Without this, a rough content box can render far outside its
-    nominal bounds (including off the edge of the slide).
+def apply_color_mapping(slide, spec: StyleSpec) -> list:
     """
+    Remap literal fill colors on unmapped shapes to the nearest theme accent.
+
+    Placeholders are skipped: their fill comes from the layout, and
+    overwriting it would pin a color the theme should control.
+    """
+    notes: list = []
     for shape in slide.shapes:
-        if not shape.has_text_frame:
+        if shape.is_placeholder:
             continue
-        is_title = _is_title_shape(shape)
-        font_name = style_spec.theme_fonts.major_latin if is_title else style_spec.theme_fonts.minor_latin
-        font_size = TITLE_FONT_SIZE if is_title else BODY_FONT_SIZE
-
-        tf = shape.text_frame
-        tf.word_wrap = True
-        if tf.auto_size != MSO_AUTO_SIZE.NONE:
-            tf.auto_size = MSO_AUTO_SIZE.NONE
-
-        for para in shape.text_frame.paragraphs:
-            if para.alignment is None:
-                para.alignment = PP_ALIGN.LEFT
-            para.line_spacing = 1.15
-            for run in para.runs:
-                run.font.name = font_name
-                run.font.size = font_size
-
-
-def apply_color_mapping(slide, style_spec: StyleSpec) -> list[str]:
-    """
-    5.3.2 - map ad hoc shape fill colors to the nearest theme accent role.
-    Returns a list of human-readable notes about what was remapped, mainly
-    so tests (and curious callers) can see the mapping happened.
-    """
-    notes: list[str] = []
-    for shape in slide.shapes:
-        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE or shape.shape_type == MSO_SHAPE_TYPE.CHART:
+        if shape.shape_type in (MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.CHART):
             continue
         try:
             fill = shape.fill
         except (AttributeError, TypeError):
             continue
-        if fill is None or fill.type is None:
-            continue
-        # MSO_FILL.SOLID == 1
-        if int(fill.type) != 1:
+        if fill is None or fill.type is None or int(fill.type) != 1:   # 1 == solid
             continue
         try:
-            current_hex = str(fill.fore_color.rgb)
+            current = str(fill.fore_color.rgb)
         except (AttributeError, TypeError):
-            continue  # already a theme-color reference, or otherwise not a literal RGB
+            continue    # already a theme reference, or not a literal RGB
 
-        role = nearest_accent_role(current_hex, style_spec)
-        if role and role in style_spec.theme_colors:
-            new_hex = style_spec.theme_colors[role]
-            if new_hex.upper() != current_hex.upper():
-                fill.fore_color.rgb = RGBColor.from_string(new_hex)
-                notes.append(f"{shape.name}: #{current_hex} -> #{new_hex} ({role})")
+        role = nearest_accent_role(current, spec)
+        if not role:
+            continue
+        new_hex = spec.theme.colors[role]
+        if new_hex.upper() != current.upper():
+            fill.fore_color.rgb = RGBColor.from_string(new_hex)
+            notes.append(f"{shape.name}: #{current} -> #{new_hex} ({role})")
     return notes
 
 
-def apply_grid_alignment(slide, style_spec: StyleSpec) -> None:
-    """
-    5.3.3 - snap shapes to the grid implied by the master (margins + column
-    count), and enforce the margins as hard bounds. This is a simple
-    snap-to-nearest-column-line implementation, not a full constraint
-    solver: it moves each shape's left/top to the nearest grid line without
-    trying to resolve overlaps between shapes.
-    """
-    grid = style_spec.grid
-    usable_width = style_spec.slide_width - grid.margin_left - grid.margin_right
-    if grid.columns <= 0:
-        return
-    col_width = (usable_width - grid.gutter * (grid.columns - 1)) / grid.columns
-    col_stride = col_width + grid.gutter
+# --- typography and direction --------------------------------------------
 
-    row_unit = Emu(228600)  # 0.25" vertical rhythm
+def _is_title(shape) -> bool:
+    return shape.is_placeholder and shape.placeholder_format.type in TITLE_PLACEHOLDERS
+
+
+def _apply_theme_fonts(paragraph, is_title: bool) -> None:
+    """
+    Point every run at the theme's fonts rather than a literal typeface.
+
+    Both the Latin and complex-script faces are set on every run, because a
+    bilingual line needs each: PowerPoint picks per character, so an Arabic
+    word inside an English sentence resolves through `+mn-cs` while the
+    English resolves through `+mn-lt`.
+    """
+    latin = MAJOR_LATIN if is_title else MINOR_LATIN
+    cs = MAJOR_CS if is_title else MINOR_CS
+    for run in paragraph.runs:
+        run.font.name = latin
+        rtl.set_complex_script_font(run, cs)
+
+
+def apply_typography(slide, spec: StyleSpec) -> dict:
+    """
+    Normalize text frames, set direction per paragraph, and point runs at
+    the theme fonts.
+
+    Sizes are pinned only on non-placeholder text. Word wrap is forced on
+    everywhere: a plain text box defaults to `wrap="none"` with autofit, so
+    a single long line silently grows past the shape - and off the slide -
+    instead of respecting the box it was drawn in.
+    """
+    stats = {"rtl_paragraphs": 0, "frames": 0}
 
     for shape in slide.shapes:
-        if shape.left is None or shape.top is None:
+        if not shape.has_text_frame:
+            continue
+        stats["frames"] += 1
+        is_title = _is_title(shape)
+        frame = shape.text_frame
+        frame.word_wrap = True
+        if frame.auto_size != MSO_AUTO_SIZE.NONE:
+            frame.auto_size = MSO_AUTO_SIZE.NONE
+
+        for para in frame.paragraphs:
+            text = "".join(run.text for run in para.runs)
+            if text.strip():
+                is_rtl = rtl.is_rtl_text(text)
+                rtl.set_paragraph_direction(para, is_rtl)
+                if is_rtl:
+                    rtl.align_for_direction(para, True)
+                    stats["rtl_paragraphs"] += 1
+
+            _apply_theme_fonts(para, is_title)
+
+            if not shape.is_placeholder:
+                # Unmapped text has no layout to inherit from, so it needs
+                # concrete values.
+                if para.alignment is None:
+                    para.alignment = PP_ALIGN.LEFT
+                para.line_spacing = 1.15
+                for run in para.runs:
+                    if run.font.size is None:
+                        run.font.size = FALLBACK_TITLE_PT if is_title else FALLBACK_BODY_PT
+
+    return stats
+
+
+# --- grid -----------------------------------------------------------------
+
+def _nearest(value: float, guides: list) -> float:
+    return min(guides, key=lambda g: abs(g - value)) if guides else value
+
+
+def apply_grid_alignment(slide, spec: StyleSpec) -> list:
+    """
+    Snap unmapped shapes to the grid inferred from the master.
+
+    Placeholders are left alone - they are already exactly where the layout
+    puts them, and snapping them would move content off the design. Only
+    shapes carried over from the rough deck are adjusted, and only their
+    position: resizing them could clip their content.
+
+    This is a snap, not a constraint solver; it does not resolve overlaps
+    between shapes.
+    """
+    grid = spec.grid
+    moved: list = []
+    sw, sh = spec.slide_width, spec.slide_height
+    if not grid.column_guides or not grid.row_guides:
+        grid.compute_guides()
+
+    max_left = 1.0 - grid.margin_right_frac
+    max_top = 1.0 - grid.margin_bottom_frac
+
+    for shape in slide.shapes:
+        if shape.is_placeholder or shape.left is None or shape.top is None:
             continue
 
-        # Snap left to the nearest column start line, clamped inside the margins.
-        rel_left = shape.left - grid.margin_left
-        col_index = round(rel_left / col_stride) if col_stride else 0
-        col_index = max(0, min(grid.columns - 1, col_index))
-        new_left = int(grid.margin_left + col_index * col_stride)
+        left_frac = shape.left / sw
+        top_frac = shape.top / sh
+        width_frac = (shape.width or 0) / sw
+        height_frac = (shape.height or 0) / sh
 
-        # Snap top to the nearest vertical rhythm line, clamped inside the top margin.
-        rel_top = max(0, shape.top - grid.margin_top)
-        row_index = round(rel_top / row_unit)
-        new_top = int(grid.margin_top + row_index * row_unit)
+        new_left = _nearest(left_frac, grid.column_guides)
+        new_top = _nearest(top_frac, grid.row_guides)
 
-        shape.left = Emu(new_left)
-        shape.top = Emu(new_top)
+        # Keep the shape inside the margins after snapping.
+        new_left = max(grid.margin_left_frac, min(new_left, max(0.0, max_left - width_frac)))
+        new_top = max(grid.margin_top_frac, min(new_top, max(0.0, max_top - height_frac)))
+
+        if abs(new_left - left_frac) > 1e-6 or abs(new_top - top_frac) > 1e-6:
+            shape.left = Emu(int(new_left * sw))
+            shape.top = Emu(int(new_top * sh))
+            moved.append(shape.name)
+
+    return moved
 
 
-def format_table(table_shape, style_spec: StyleSpec) -> None:
-    """
-    Bonus, not required for Phase 1-2: restyle a table's header row and
-    fonts to the theme. Included because - unlike charts - tables don't
-    need a separate XML part, so it's not blocked on Phase 3 the way chart
-    recoloring is. Safe to ignore/remove if out of scope for this drop.
-    """
+# --- tables and charts ----------------------------------------------------
+
+def format_table(table_shape, spec: StyleSpec) -> None:
+    """Apply the brand's table styling: header shading, borders, fonts."""
+    style = spec.table_style
     table = table_shape.table
-    header_fill_hex = style_spec.theme_colors.get("accent1")
+
     for r_idx, row in enumerate(table.rows):
+        is_header = r_idx == 0
         for cell in row.cells:
-            if header_fill_hex and r_idx == 0:
+            if is_header and style.header_fill:
                 cell.fill.solid()
-                cell.fill.fore_color.rgb = RGBColor.from_string(header_fill_hex)
+                cell.fill.fore_color.rgb = RGBColor.from_string(style.header_fill)
+            elif style.banded_fill and r_idx % 2 == 0:
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = RGBColor.from_string(style.banded_fill)
+
+            cell.margin_left = Emu(style.cell_padding_emu)
+            cell.margin_right = Emu(style.cell_padding_emu)
+
             for para in cell.text_frame.paragraphs:
+                text = "".join(run.text for run in para.runs)
+                if text.strip():
+                    is_rtl = rtl.is_rtl_text(text)
+                    rtl.set_paragraph_direction(para, is_rtl)
+                    if is_rtl:
+                        rtl.align_for_direction(para, True)
                 for run in para.runs:
-                    run.font.name = style_spec.theme_fonts.minor_latin
-                    run.font.size = TABLE_HEADER_FONT_SIZE if r_idx == 0 else TABLE_BODY_FONT_SIZE
-                    if r_idx == 0:
-                        run.font.bold = True
+                    run.font.name = MINOR_LATIN
+                    rtl.set_complex_script_font(run, MINOR_CS)
+                    run.font.size = Pt(
+                        style.header_font_size_pt if is_header else style.body_font_size_pt
+                    )
+                    if is_header:
+                        run.font.bold = style.header_bold
+                        if style.header_font_color:
+                            run.font.color.rgb = RGBColor.from_string(style.header_font_color)
+                    elif style.body_font_color:
+                        run.font.color.rgb = RGBColor.from_string(style.body_font_color)
 
 
-def format_slide(slide, style_spec: StyleSpec) -> dict:
-    """Run the full Phase 1-2 Stage 3 pass on one slide. Returns a small
-    report dict (useful for logging / the API response / tests)."""
-    apply_typography(slide, style_spec)
-    color_notes = apply_color_mapping(slide, style_spec)
-    apply_grid_alignment(slide, style_spec)
+def format_chart(chart_shape, spec: StyleSpec) -> list:
+    """
+    Recolor a native chart's series to the brand palette and restyle its
+    text.
 
-    table_count = 0
+    Chart XML varies a lot by chart type, and a series that carries no
+    fill element behaves differently from one that does, so each step is
+    guarded: a chart that resists styling is reported rather than allowed
+    to fail the deck.
+    """
+    notes: list = []
+    style = spec.chart_style
+    if not style.series_colors:
+        return notes
+
+    try:
+        chart = chart_shape.chart
+    except (AttributeError, ValueError):
+        return notes
+
+    try:
+        chart.font.size = Pt(style.font_size_pt)
+        chart.font.name = MINOR_LATIN
+    except (AttributeError, ValueError):
+        pass
+
+    try:
+        for i, series in enumerate(chart.series):
+            color = style.series_colors[i % len(style.series_colors)]
+            series.format.fill.solid()
+            series.format.fill.fore_color.rgb = RGBColor.from_string(color)
+        notes.append(f"recolored {len(list(chart.series))} chart series")
+    except (AttributeError, ValueError, NotImplementedError) as exc:
+        notes.append(f"could not recolor series on '{chart_shape.name}': {exc}")
+
+    try:
+        if chart.has_legend:
+            chart.legend.include_in_layout = False
+    except (AttributeError, ValueError):
+        pass
+
+    return notes
+
+
+# --- entry point ----------------------------------------------------------
+
+def format_slide(slide, spec: StyleSpec) -> dict:
+    """Run the full Stage 3 formatting pass over one rebuilt slide."""
+    typography = apply_typography(slide, spec)
+    color_notes = apply_color_mapping(slide, spec)
+    moved = apply_grid_alignment(slide, spec)
+
+    tables = charts = 0
+    chart_notes: list = []
     for shape in slide.shapes:
-        if shape.has_table:
-            format_table(shape, style_spec)
-            table_count += 1
+        if getattr(shape, "has_table", False) and shape.has_table:
+            format_table(shape, spec)
+            tables += 1
+        elif getattr(shape, "has_chart", False) and shape.has_chart:
+            chart_notes.extend(format_chart(shape, spec))
+            charts += 1
 
-    return {"color_remaps": color_notes, "tables_formatted": table_count}
+    return {
+        "color_remaps": color_notes,
+        "shapes_snapped": moved,
+        "tables_formatted": tables,
+        "charts_formatted": charts,
+        "chart_notes": chart_notes,
+        "rtl_paragraphs": typography["rtl_paragraphs"],
+        "text_frames": typography["frames"],
+    }
