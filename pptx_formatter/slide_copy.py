@@ -19,7 +19,24 @@ Not everything can or should be reflowed, so the mapping is a hybrid:
     placeholder's footprint. A chart can't live in a text placeholder, and
     re-flowing a table would destroy its column widths.
 *   **Anything left over** - decorative autoshapes, extra pictures - is
-    copied across at its original position for the grid pass to align.
+    admitted only if it can be placed without landing on mapped content.
+
+That last rule is the one that keeps the output clean. Leftover shapes
+arrive in the rough deck's coordinates while the placeholders sit on the
+master's grid, so copying them verbatim is the one move guaranteed to
+collide. Two gates decide their fate, and both fail closed - a shape that
+can't be placed safely is dropped and reported, never nudged somewhere
+arbitrary and hoped for:
+
+1.  **Scaffolding is discarded.** A rough deck draws a card as a filled
+    rectangle with separate text boxes on top of it. Once that text is
+    mapped into a placeholder, the rectangle is an empty shell whose only
+    job was framing words that now live somewhere else, and copying it
+    across lands brand-less decoration on top of the layout that just
+    received them. Whatever rode inside the shell goes with it.
+2.  **Survivors are collision-checked.** Anything still standing is tested
+    against every rectangle the mapped content now owns, and against the
+    leftovers already admitted ahead of it.
 
 Nothing is silently dropped: whatever can't be mapped is reported.
 """
@@ -32,7 +49,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.oxml.ns import qn
 from pptx.util import Emu
 
-from . import part_copy
+from . import geometry, part_copy
 from .classifier import assign_roles
 
 BODY_PLACEHOLDERS = {
@@ -120,6 +137,80 @@ def _append_text(dest_frame, source) -> None:
     """Append a TextSource's paragraphs after whatever is already there."""
     for src_para in source.para_list():
         _copy_paragraph(src_para, dest_frame.add_paragraph())
+
+
+def _shrink_on_overflow(text_frame) -> None:
+    """
+    Ask PowerPoint to scale text down when it overruns its slot.
+
+    Only used where content was merged past what the layout budgeted for.
+    Text set a size smaller than the designer intended is a compromise; text
+    running off the bottom of the slide is a defect, and without this the
+    merge produces the second one. PowerPoint recalculates the scale itself
+    on open, so the element is written without a fontScale rather than
+    guessing one here.
+    """
+    text_frame.word_wrap = True
+    text_frame._txBody.bodyPr.get_or_change_to_normAutofit()
+
+
+# --- leftover shapes ------------------------------------------------------
+
+def _harvested_rects(title_source, body_sources) -> list:
+    """
+    Boxes of the source text boxes whose words are now in placeholders.
+
+    A quote and its attribution can be split into two sources off one block,
+    so the same shape may appear twice; duplicates are harmless here since
+    these are only ever used as containment probes.
+    """
+    sources = list(body_sources)
+    if title_source is not None:
+        sources.append(title_source)
+
+    rects = []
+    for source in sources:
+        block = getattr(source, "block", None)
+        shape = getattr(block, "shape", None) if block is not None else None
+        if shape is None:
+            continue
+        box = geometry.rect(shape)
+        if box is not None:
+            rects.append(box)
+    return rects
+
+
+def _scaffolding(leftovers: list, harvested: list) -> dict:
+    """
+    Leftover shapes that existed only to frame harvested text, keyed by id
+    with the reason each one is going.
+
+    Two passes. First the frames themselves: any leftover shape that
+    contained one of the mapped text boxes. Then their contents: anything
+    riding inside a doomed frame goes too, because a card's icon and divider
+    rule floating on the layout without the card is worse than losing both.
+    """
+    frames = []
+    for shape in leftovers:
+        box = geometry.rect(shape)
+        if box is None:
+            continue
+        if any(geometry.contains(box, text_box) for text_box in harvested):
+            frames.append((shape, box))
+
+    doomed = {
+        id(shape): "framed text that is now in a placeholder"
+        for shape, _ in frames
+    }
+    for shape in leftovers:
+        if id(shape) in doomed:
+            continue
+        box = geometry.rect(shape)
+        if box is None:
+            continue
+        if any(geometry.contains(frame_box, box) for _, frame_box in frames):
+            doomed[id(shape)] = "rode inside a shape that was dropped"
+    return doomed
 
 
 # --- non-text mapping -----------------------------------------------------
@@ -218,7 +309,10 @@ def rebuild_slide(dest_slide, source_slide, classification, spec, layout) -> dic
     features = classification.features
     rtl_slide = features.is_rtl if features else False
     inv = _inventory(dest_slide, rtl_slide)
-    report = {"mapped": [], "carried_over": [], "warnings": [], "unused_placeholders": []}
+    report = {
+        "mapped": [], "carried_over": [], "dropped": [],
+        "warnings": [], "unused_placeholders": [],
+    }
 
     title_source, body_sources = assign_roles(features, classification.archetype)
     if rtl_slide:
@@ -254,6 +348,7 @@ def rebuild_slide(dest_slide, source_slide, classification, spec, layout) -> dic
     if len(body_sources) > len(body_slots) and body_slots:
         for extra in body_sources[len(body_slots):]:
             _append_text(body_slots[-1].text_frame, extra)
+        _shrink_on_overflow(body_slots[-1].text_frame)
         report["warnings"].append(
             f"{len(body_sources) - len(body_slots)} extra text block(s) merged into "
             f"'{body_slots[-1].name}'; layout '{layout.name}' has {len(body_slots)} body slot(s)"
@@ -270,6 +365,7 @@ def rebuild_slide(dest_slide, source_slide, classification, spec, layout) -> dic
                 copy_text(source, box.text_frame)
             else:
                 _append_text(box.text_frame, source)
+        _shrink_on_overflow(box.text_frame)
         report["warnings"].append(
             f"layout '{layout.name}' has no body placeholder; "
             f"{len(body_sources)} text block(s) placed in the content area"
@@ -303,9 +399,9 @@ def rebuild_slide(dest_slide, source_slide, classification, spec, layout) -> dic
                 slot.insert_picture(io.BytesIO(picture.image.blob))
             else:
                 # A text slot can't hold a picture, so use its footprint.
-                geometry = _geometry(slot)
+                footprint = _geometry(slot)
                 _remove(slot)
-                _copy_picture(dest_slide, picture, geometry)
+                _copy_picture(dest_slide, picture, footprint)
             report["mapped"].append(f"picture {i + 1} -> {slot.name}")
         except (AttributeError, ValueError) as exc:
             report["warnings"].append(f"could not place picture in '{slot.name}': {exc}")
@@ -315,13 +411,13 @@ def rebuild_slide(dest_slide, source_slide, classification, spec, layout) -> dic
     table_slots = list(inv["table"])
     for i, table in enumerate(tables):
         slot = claim(table_slots)
-        geometry = None
+        footprint = None
         if slot is not None:
-            geometry = _geometry(slot)
+            footprint = _geometry(slot)
             _remove(slot)
-        _copy_table(dest_slide, table, geometry)
+        _copy_table(dest_slide, table, footprint)
         report["mapped"].append(
-            f"table {i + 1} -> {'placeholder footprint' if geometry else 'original position'}"
+            f"table {i + 1} -> {'placeholder footprint' if footprint else 'original position'}"
         )
 
     # -- charts ------------------------------------------------------------
@@ -329,15 +425,15 @@ def rebuild_slide(dest_slide, source_slide, classification, spec, layout) -> dic
     chart_slots = list(inv["chart"])
     for i, chart in enumerate(charts):
         slot = claim(chart_slots)
-        geometry = None
+        footprint = None
         if slot is not None:
-            geometry = _geometry(slot)
+            footprint = _geometry(slot)
             _remove(slot)
         try:
-            _copy_chart(dest_slide, chart, geometry)
+            _copy_chart(dest_slide, chart, footprint)
             report["mapped"].append(
                 f"chart {i + 1} copied with its data"
-                + (" onto placeholder footprint" if geometry else "")
+                + (" onto placeholder footprint" if footprint else "")
             )
         except Exception as exc:                      # noqa: BLE001
             # A malformed chart part shouldn't cost the whole deck.
@@ -350,12 +446,40 @@ def rebuild_slide(dest_slide, source_slide, classification, spec, layout) -> dic
         report["unused_placeholders"].append(slot.name)
 
     # -- everything else ---------------------------------------------------
-    for shape in (features.other_shapes if features else []):
-        if shape.shape_type == MSO_SHAPE_TYPE.PLACEHOLDER:
+    # Both gates fail closed. A leftover shape earns its place on the slide
+    # or it is dropped with a reason; it is never placed on the chance that
+    # it happens to miss.
+    leftovers = [
+        shape
+        for shape in (features.other_shapes if features else [])
+        if shape.shape_type != MSO_SHAPE_TYPE.PLACEHOLDER
+    ]
+    scaffolding = _scaffolding(leftovers, _harvested_rects(title_source, body_sources))
+
+    # Everything already on the slide is mapped content, since leftovers are
+    # copied last. Survivors join the set as they land, so they can't stack
+    # on each other either.
+    occupied = [box for box in (geometry.rect(s) for s in dest_slide.shapes) if box]
+
+    for shape in leftovers:
+        if id(shape) in scaffolding:
+            report["dropped"].append(
+                f"shape '{shape.name}' dropped: {scaffolding[id(shape)]}"
+            )
             continue
+
+        box = geometry.rect(shape)
+        if box is not None and geometry.collides(box, occupied):
+            report["dropped"].append(
+                f"shape '{shape.name}' dropped: its position lands on mapped content"
+            )
+            continue
+
         try:
             _copy_generic(dest_slide, shape)
             report["carried_over"].append(f"shape '{shape.name}' copied at original position")
+            if box is not None:
+                occupied.append(box)
         except Exception as exc:                      # noqa: BLE001
             report["warnings"].append(f"could not copy shape '{shape.name}': {exc}")
 

@@ -24,7 +24,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Emu, Pt
 
-from . import rtl
+from . import geometry, rtl
 from .style_spec import StyleSpec, ACCENT_ROLES
 
 # Sizes applied only to text that could not be placed in a placeholder;
@@ -193,8 +193,12 @@ def apply_grid_alignment(slide, spec: StyleSpec) -> list:
     shapes carried over from the rough deck are adjusted, and only their
     position: resizing them could clip their content.
 
-    This is a snap, not a constraint solver; it does not resolve overlaps
-    between shapes.
+    This is a snap, not a constraint solver: it will not resolve an overlap
+    that the rough deck already had. What it does guarantee is that it never
+    *creates* one. A snap that would push a shape onto a placeholder or onto
+    a shape already snapped is abandoned and the shape left where it was,
+    because a few millimetres off the guide is a far smaller defect than
+    content buried under content.
     """
     grid = spec.grid
     moved: list = []
@@ -205,10 +209,21 @@ def apply_grid_alignment(slide, spec: StyleSpec) -> list:
     max_left = 1.0 - grid.margin_right_frac
     max_top = 1.0 - grid.margin_bottom_frac
 
-    for shape in slide.shapes:
-        if shape.is_placeholder or shape.left is None or shape.top is None:
-            continue
+    # Placeholders are fixed points: they are where the layout put them and
+    # nothing may be snapped on top of them.
+    occupied = [
+        box for box in (geometry.rect(s) for s in slide.shapes if s.is_placeholder) if box
+    ]
+    movable = [
+        s for s in slide.shapes
+        if not s.is_placeholder and s.left is not None and s.top is not None
+    ]
+    # A shape that stays put still occupies its box, so seed the set with
+    # every candidate and swap the entry when one actually moves.
+    boxes = {id(s): geometry.rect(s) for s in movable}
+    occupied.extend(box for box in boxes.values() if box)
 
+    for shape in movable:
         left_frac = shape.left / sw
         top_frac = shape.top / sh
         width_frac = (shape.width or 0) / sw
@@ -221,10 +236,29 @@ def apply_grid_alignment(slide, spec: StyleSpec) -> list:
         new_left = max(grid.margin_left_frac, min(new_left, max(0.0, max_left - width_frac)))
         new_top = max(grid.margin_top_frac, min(new_top, max(0.0, max_top - height_frac)))
 
-        if abs(new_left - left_frac) > 1e-6 or abs(new_top - top_frac) > 1e-6:
-            shape.left = Emu(int(new_left * sw))
-            shape.top = Emu(int(new_top * sh))
-            moved.append(shape.name)
+        if abs(new_left - left_frac) <= 1e-6 and abs(new_top - top_frac) <= 1e-6:
+            continue
+
+        current = boxes[id(shape)]
+        target = None
+        if current is not None:
+            left_emu, top_emu = int(new_left * sw), int(new_top * sh)
+            target = (
+                left_emu, top_emu,
+                left_emu + (shape.width or 0), top_emu + (shape.height or 0),
+            )
+            others = [b for b in occupied if b is not current]
+            if geometry.collides(target, others):
+                continue
+
+        shape.left = Emu(int(new_left * sw))
+        shape.top = Emu(int(new_top * sh))
+        moved.append(shape.name)
+
+        if current is not None:
+            occupied.remove(current)
+            occupied.append(target)
+            boxes[id(shape)] = target
 
     return moved
 

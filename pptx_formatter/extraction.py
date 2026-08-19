@@ -492,6 +492,30 @@ def _slug(text: str) -> str:
 
 # --- grid ----------------------------------------------------------------
 
+# Fewest content placeholders that make an inferred grid worth trusting.
+# Three is the point at which a left edge, a right edge and a gutter can all
+# be corroborated by more than one layout.
+MIN_GRID_SAMPLE = 3
+
+# No inferred margin may exceed this. A designer can of course reserve a
+# fifth of the slide, but a margin that wide inferred from placeholder
+# extents is far more often an artefact than an intention.
+MAX_MARGIN_FRAC = 0.12
+
+# How much wider than the left margin the right one may be inferred before
+# it is treated as an artefact and mirrored from the left.
+#
+# The right margin is derived from the widest placeholder's right edge, so it
+# is only meaningful when the sample actually contains a full-width element.
+# When it doesn't, the "margin" is really just the gap beyond the widest
+# thing that happened to be measured, and it strands a band of dead slide
+# down the side of every generated layout. Horizontal grids are near
+# symmetric almost always, so a large asymmetry is evidence of a gap in the
+# sample rather than of the designer's intent. Vertical margins are left
+# alone: a tall title zone over a slim footer band is genuinely common.
+MARGIN_ASYMMETRY_LIMIT = 2.0
+
+
 def derive_grid(layouts: list) -> Grid:
     """
     Infer margins, gutters and guide positions from where the designer
@@ -511,7 +535,13 @@ def derive_grid(layouts: list) -> Grid:
         for p in layout.placeholders
         if p.ph_type not in FURNITURE and p.width_frac > 0.05
     ]
-    if not content:
+    # Inference needs a representative sample. A master that carries its
+    # design in plain shapes rather than placeholders offers a handful of
+    # stragglers, and margins derived from those describe nothing: they
+    # land on the clamp below and become a content box unrelated to the
+    # design, which every generated layout then inherits. Below the
+    # threshold the defaults are the more honest answer.
+    if len(content) < MIN_GRID_SAMPLE:
         grid.compute_guides()
         return grid
 
@@ -520,11 +550,19 @@ def derive_grid(layouts: list) -> Grid:
     grid.margin_right_frac = round(1.0 - max(p.left_frac + p.width_frac for p in content), 4)
     grid.margin_bottom_frac = round(1.0 - max(p.top_frac + p.height_frac for p in content), 4)
 
-    # Clamp: a single full-bleed layout would otherwise drive every margin
-    # to zero and defeat grid snapping across the whole deck.
+    # No full-width element in the sample means no evidence for the right
+    # margin. Mirror the left, which at least keeps the content box centred
+    # instead of hard against one edge.
+    if (grid.margin_left_frac > 0.01
+            and grid.margin_right_frac > grid.margin_left_frac * MARGIN_ASYMMETRY_LIMIT):
+        grid.margin_right_frac = grid.margin_left_frac
+
+    # Clamp both ends. A full-bleed layout drags a margin to zero and
+    # defeats grid snapping for the whole deck; one stray narrow placeholder
+    # drags the opposite margin wide enough to strand a band of dead slide.
     for attr in ("margin_left_frac", "margin_top_frac",
                  "margin_right_frac", "margin_bottom_frac"):
-        setattr(grid, attr, max(0.0, min(getattr(grid, attr), 0.2)))
+        setattr(grid, attr, max(0.0, min(getattr(grid, attr), MAX_MARGIN_FRAC)))
 
     # Gutter: the smallest horizontal gap between side-by-side placeholders.
     gutters = []

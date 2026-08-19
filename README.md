@@ -30,6 +30,15 @@ routed to the layout carrying that archetype, and its content mapped into
 that layout's placeholders. Arabic text gets right-to-left direction and
 the correct complex-script typeface.
 
+Rough-deck decoration does not come with it. A rough slide draws a card as a
+filled rectangle with separate text boxes laid on top; once those words are
+mapped into a placeholder, the rectangle is an empty shell in coordinates
+that mean nothing on the master's grid. Anything that framed harvested text
+is dropped, along with whatever rode inside it, and anything still left is
+admitted only if it lands clear of the mapped content. Both gates fail
+closed and every removal is reported with its reason — see `dropped` in the
+per-slide report.
+
 ## Setup
 
 ```bash
@@ -250,10 +259,16 @@ want the work queued.
 pytest tests/ -q
 ```
 
-126 tests, no network required. The Supabase backend is exercised against an
+136 tests, no network required. The Supabase backend is exercised against an
 in-memory client double (`tests/fake_supabase.py`), including a full pipeline
 run and a check that its layout-selection scoring matches the local
 backend's exactly.
+
+`tests/test_overlap.py` covers the overlap guarantee end to end: a card-built
+rough deck goes through the pipeline and every output slide is checked for
+overlapping shapes. Its overlap arithmetic is written out longhand rather
+than imported from `pptx_formatter.geometry`, so a bug in that module can't
+also be the thing certifying its own output.
 
 They also include a package validator (`tests/conftest.py`) that opens the
 output as a zip and checks every part parses, every `rId` reference resolves,
@@ -268,7 +283,16 @@ PowerPoint refuses with "needs to be repaired".
   overflows and occasionally flags text that fits. A precise answer needs a
   rendering pass (LibreOffice headless, say) that isn't wired up here.
 - **Grid snapping is a snap, not a solver.** It moves unmapped shapes to the
-  nearest guide; it doesn't resolve overlaps between them.
+  nearest guide, and it will not create an overlap doing so — a snap that
+  would push a shape onto a placeholder or onto an already-snapped shape is
+  abandoned and the shape left where it was. It still won't *resolve* an
+  overlap the rough deck already had; that's reported, not fixed.
+- **The margin inference needs full-width evidence.** Right and bottom
+  margins are read off the widest and lowest placeholder, so a master whose
+  layouts carry no full-width placeholder gives no evidence for them. A
+  right margin inferred at more than twice the left is treated as an
+  artefact and mirrored from the left instead of stranding a band of dead
+  slide down the side of every generated layout.
 - **Placeholders are authoritative.** Content mapped into a placeholder is
   not repositioned or resized — that's what keeps it inheriting from the
   master. Only shapes that couldn't be mapped get snapped.

@@ -147,6 +147,7 @@ def apply_to_deck(
             "layout": layout.name,
             "mapped": copy_report["mapped"],
             "carried_over": copy_report["carried_over"],
+            "dropped": copy_report["dropped"],
             "unused_placeholders": copy_report["unused_placeholders"],
             "warnings": copy_report["warnings"],
             "formatting": format_report,
